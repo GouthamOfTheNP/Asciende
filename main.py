@@ -13,7 +13,7 @@ import base64
 import io
 import time
 import threading
-from keras.models import load_model
+# from keras.models import load_model
 import numpy as np
 
 logo = Image.open("asciendo.ico")
@@ -235,13 +235,13 @@ def predict_with_teachable_machine(image, model_url, confidence_threshold=0.5):
 		_, buffer = cv2.imencode('.jpg', image)
 		image = np.asarray(image, dtype=np.float32).reshape(1, 224, 224, 3)
 		img_base64 = base64.b64encode(buffer).decode('utf-8')
-		prediction = model.predict(image)
+		# prediction = model.predict(image)
 
-		index = np.argmax(prediction)
+		# index = np.argmax(prediction)
 
-		class_name = class_names[index]
+		# class_name = class_names[index]
 
-		confidence_score = prediction[0][index]
+		# confidence_score = prediction[0][index]
 		mock_predictions = [
 			{"class": "A", "confidence": 0.85},
 			{"class": "B", "confidence": 0.12},
