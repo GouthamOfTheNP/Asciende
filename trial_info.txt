@@ -1,0 +1,32 @@
+EPO - 100
+bs - 32
+lr - 0.001
+
+A  - thinks it is y
+B - works
+C - fighting with X
+D - fighting with v/W
+E -  kinda fighting with m and s
+F - figting with W
+G - works
+H - works
+I - figting vbetween m and y
+J - works
+K - 100percent V
+L - works
+M - A and E
+N - doesn't work
+O - works
+P - doesn't work
+Q - doesn't work
+R - conflicting with V
+S - works
+T - works
+U - thinks it is V
+V - works
+w - works
+X - works
+y - works
+z - works
+
+
