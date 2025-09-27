@@ -1,5 +1,8 @@
 import cv2
 import streamlit as st
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["KMP_INIT_AT_FORK"] = "FALSE"
 from gtts import gTTS
 import tempfile
 from CorrectionMachine import ASLCorrection
@@ -10,6 +13,8 @@ import base64
 import io
 import time
 import threading
+from keras.models import load_model
+import numpy as np
 
 logo = Image.open("asciendo.ico")
 st.set_page_config(page_title="Asciende", page_icon=logo, layout="wide")
@@ -221,14 +226,22 @@ h1, h2, h3 {
 </style>
 """, unsafe_allow_html=True)
 
-# Function to call Teachable Machine API
-def predict_with_teachable_machine(image_array, model_url, confidence_threshold=0.5):
+def predict_with_teachable_machine(image, model_url, confidence_threshold=0.5):
 	"""
 	Send image to Teachable Machine model and get predictions
 	"""
 	try:
-		_, buffer = cv2.imencode('.jpg', image_array)
+		image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
+		_, buffer = cv2.imencode('.jpg', image)
+		image = np.asarray(image, dtype=np.float32).reshape(1, 224, 224, 3)
 		img_base64 = base64.b64encode(buffer).decode('utf-8')
+		prediction = model.predict(image)
+
+		index = np.argmax(prediction)
+
+		class_name = class_names[index]
+
+		confidence_score = prediction[0][index]
 		mock_predictions = [
 			{"class": "A", "confidence": 0.85},
 			{"class": "B", "confidence": 0.12},
