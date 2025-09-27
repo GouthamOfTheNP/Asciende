@@ -10,7 +10,6 @@ import base64
 import io
 import time
 import threading
-from keras.models import load_model
 
 logo = Image.open("asciendo.ico")
 st.set_page_config(page_title="Asciende", page_icon=logo, layout="wide")
