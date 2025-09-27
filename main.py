@@ -10,6 +10,7 @@ import base64
 import io
 import time
 import threading
+from keras.models import load_model
 
 logo = Image.open("asciendo.ico")
 st.set_page_config(page_title="Asciende", page_icon=logo, layout="wide")
@@ -249,23 +250,18 @@ def predict_with_teachable_machine(image_array, model_url, confidence_threshold=
 		st.error(f"Error calling Teachable Machine API: {str(e)}")
 		return []
 
-# Function to preprocess frame for model
 def preprocess_frame_for_model(frame):
 	"""
 	Preprocess OpenCV frame for Teachable Machine model input
 	"""
-	# Resize to model input size (typically 224x224 for image classification)
 	resized = cv2.resize(frame, (224, 224))
 
-	# Convert BGR to RGB (OpenCV uses BGR, models expect RGB)
 	rgb_frame = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
 
-	# Normalize pixel values to [0, 1] if needed
 	normalized = rgb_frame.astype(np.float32) / 255.0
 
 	return normalized
 
-# Initialize session state (simplified)
 if "asl_text" not in st.session_state:
 	st.session_state.asl_text = ""
 if "current_prediction" not in st.session_state:
@@ -279,13 +275,11 @@ with st.sidebar:
 	st.image(logo, width=80)
 	st.title("Controls")
 
-	# Simplified main controls
 	run = st.toggle("▶️ Start Recognition", help="Turn on webcam and ASL recognition")
 	mode = st.radio("Mode", ["🎯 Translation", "📚 Training"], help="Choose your mode")
 
 	st.markdown("---")
 
-	# Simple settings (collapsed by default)
 	with st.expander("⚙️ Settings", expanded=False):
 		confidence_threshold = st.slider(
 			"Recognition Sensitivity",
@@ -315,7 +309,6 @@ with st.sidebar:
 		with open("rating.txt", "a") as f:
 			f.write(str(rating_input + 1) + " ")
 
-# Read ratings
 try:
 	with open("rating.txt", "r") as f:
 		ratings_list = [int(i) for i in f.read().split() if i.isnumeric()]
@@ -375,13 +368,10 @@ with col_main:
 		elif mode == "📚 Training":
 			st.markdown("### 📚 Practice Mode")
 
-			# Training webcam feed
 			FRAME_WINDOW = st.image([])
 
-			# Simple training feedback
 			training_feedback = st.empty()
 
-		# Main webcam loop
 		frame_container = st.empty()
 
 		while run:
@@ -390,30 +380,24 @@ with col_main:
 				st.error("Failed to access camera")
 				break
 
-			# Display frame
 			frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 			FRAME_WINDOW.image(frame_rgb, channels="RGB")
 
-			# Make predictions continuously (simplified)
 			current_time = time.time()
-			prediction_interval = 1.0  # Fixed 1 second interval for simplicity
+			prediction_interval = 1.0
 
 			if (current_time - st.session_state.last_prediction_time) >= prediction_interval:
-				# Preprocess frame for model
 				processed_frame = preprocess_frame_for_model(frame)
 
-				# Get predictions from Teachable Machine
 				predictions = predict_with_teachable_machine(processed_frame, model_url, confidence_threshold)
 
 				if predictions:
 					top_prediction = predictions[0]
 
-					# Only update if confidence is above threshold
 					if top_prediction["confidence"] >= confidence_threshold:
 						st.session_state.current_prediction = top_prediction["class"]
 						st.session_state.prediction_confidence = top_prediction["confidence"]
 
-						# Add to ASL text automatically (avoid duplicates)
 						if st.session_state.asl_text:
 							words = st.session_state.asl_text.split()
 							if not words or words[-1] != top_prediction["class"]:
@@ -423,9 +407,7 @@ with col_main:
 
 				st.session_state.last_prediction_time = current_time
 
-			# Display content in proper hierarchy
 			if mode == "🎯 Translation":
-				# 1. AUDIO (Highest priority)
 				if st.session_state.asl_text and auto_audio:
 					try:
 						tts = gTTS(st.session_state.asl_text)
@@ -439,7 +421,6 @@ with col_main:
 						with audio_placeholder.container():
 							st.error(f"Audio error: {str(e)}")
 
-				# 2. TEXT DISPLAY (Second priority)
 				with text_placeholder.container():
 					if st.session_state.asl_text:
 						st.markdown("### 📝 Translated Text")
@@ -459,7 +440,6 @@ with col_main:
 						st.info("👋 Start signing in front of the camera to see translations appear here!")
 
 			elif mode == "📚 Training":
-				# Simple training feedback
 				with training_feedback.container():
 					if st.session_state.current_prediction:
 						confidence = st.session_state.prediction_confidence
@@ -472,11 +452,9 @@ with col_main:
 
 			st.session_state.frame_count += 1
 
-			# Break condition
 			if not run:
 				break
 
-		# Clean up camera when done
 		if "camera" in st.session_state:
 			st.session_state.camera.release()
 
