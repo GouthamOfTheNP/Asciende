@@ -1,22 +1,15 @@
-import cv2
-import streamlit as st
 import os
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["KMP_INIT_AT_FORK"] = "FALSE"
-from gtts import gTTS
 import tempfile
-from CorrectionMachine import ASLCorrection
-from PIL import Image
-import numpy as np
-import requests
-import base64
-import io
 import time
-import threading
-from keras.models import load_model  # TensorFlow is required for Keras to work
-import numpy as np
 
-# Disable scientific notation for clarity
+import cv2
+import numpy as np
+import streamlit as st
+import tensorflow as tf
+from PIL import Image
+from gtts import gTTS
+from keras.layers import TFSMLayer
+
 np.set_printoptions(suppress=True)
 
 logo = Image.open("asciendo.ico")
@@ -229,84 +222,79 @@ h1, h2, h3 {
 </style>
 """, unsafe_allow_html=True)
 
+
 @st.cache_resource
-def load_keras_model():
-	"""
-	Load the Keras model and class labels with caching for performance
-	"""
+def load_model():
+	class_names = None
+
 	try:
-		# Load the model
-		model = load_model("keras_Model.h5", compile=False)
-
-		# Load the labels
-		class_names = open("labels.txt", "r").readlines()
-
-		return model, class_names
-	except Exception as e:
-		st.error(f"Error loading model: {str(e)}")
+		if os.path.exists("labels.txt"):
+			with open("labels.txt", "r") as f:
+				class_names = f.readlines()
+		else:
+			return None, None
+	except Exception:
 		return None, None
 
-def predict_with_keras_model(image, model, class_names, confidence_threshold=0.5):
-	"""
-	Use the loaded Keras model to predict ASL signs
-	"""
+	model = TFSMLayer("model.savedmodel", call_endpoint="serving_default")
+	return ("savedmodel", model), class_names
+
+
+model = load_model()
+
+
+def predict_with_savedmodel(image, model, class_names, confidence_threshold=0.5):
 	try:
-		if model is None or class_names is None:
-			return []
-
-		# Resize the raw image into (224-height,224-width) pixels
 		image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
-
-		# Make the image a numpy array and reshape it to the models input shape.
-		image = np.asarray(image, dtype=np.float32).reshape(1, 224, 224, 3)
-
-		# Normalize the image array
+		if len(image.shape) == 3 and image.shape[2] == 3:
+			image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+		image = image.astype(np.float32)
+		image = np.expand_dims(image, axis=0)
 		image = (image / 127.5) - 1
+		input_tensor = tf.convert_to_tensor(image)
 
-		# Predicts the model
-		prediction = model.predict(image, verbose=0)  # verbose=0 to suppress output
-		index = np.argmax(prediction)
-		class_name = class_names[index].strip()  # Remove whitespace/newline
-		confidence_score = prediction[0][index]
+		if hasattr(model, 'signatures') and 'serving_default' in model.signatures:
+			inference_func = model.signatures['serving_default']
+		else:
+			inference_func = model
 
-		# Remove the index prefix if it exists (e.g., "0 A" -> "A")
-		if len(class_name) > 2 and class_name[1] == ' ':
-			class_name = class_name[2:]
+		prediction_tf = inference_func
+		if isinstance(prediction_tf, dict):
+			# Take the first tensor if output is a dict
+			prediction_tensor = list(prediction_tf.values())[0]
+		else:
+			prediction_tensor = prediction_tf
 
-		# Return predictions in the expected format
-		predictions = [{"class": class_name, "confidence": float(confidence_score)}]
+		if isinstance(prediction_tensor, tf.Tensor):
+			prediction = prediction_tensor.numpy()
+		else:
+			prediction = np.array(prediction_tensor)
 
-		# Add other top predictions for completeness
-		sorted_indices = np.argsort(prediction[0])[::-1]
+		if prediction.ndim > 1:
+			prediction = prediction[0]
+
+		sorted_indices = np.argsort(prediction)[::-1]
 		all_predictions = []
-
-		for i in sorted_indices[:3]:  # Top 3 predictions
-			pred_class_name = class_names[i].strip()
-			if len(pred_class_name) > 2 and pred_class_name[1] == ' ':
-				pred_class_name = pred_class_name[2:]
-
+		for i in sorted_indices[:3]:
+			class_name = class_names[i].strip()
 			all_predictions.append({
-				"class": pred_class_name,
-				"confidence": float(prediction[0][i])
+				"class": class_name,
+				"confidence": float(str(prediction[i]).split(" ")[0])
 			})
 
-		# Filter by confidence threshold
-		high_confidence_predictions = [p for p in all_predictions if p["confidence"] >= confidence_threshold]
+		high_conf = [p for p in all_predictions if p["confidence"] >= confidence_threshold]
+		return high_conf if high_conf else all_predictions[:1]
 
-		return high_confidence_predictions if high_confidence_predictions else all_predictions[:1]
-
-	except Exception as e:
-		st.error(f"Error in model prediction: {str(e)}")
+	except ArithmeticError as e:
+		st.error(f"SavedModel prediction error: {str(e)}")
 		return []
 
-def preprocess_frame_for_model(frame):
-	"""
-	Preprocess OpenCV frame for Keras model input
-	"""
-	# The Keras model preprocessing is now handled in predict_with_keras_model
-	return frame
 
-# Initialize session state
+def predict_with_model(image, model_info, class_names, confidence_threshold=0.5):
+	model_type, model = model_info
+	return predict_with_savedmodel(image, model, class_names, confidence_threshold)
+
+
 if "asl_text" not in st.session_state:
 	st.session_state.asl_text = ""
 if "current_prediction" not in st.session_state:
@@ -316,8 +304,7 @@ if "prediction_confidence" not in st.session_state:
 if "last_prediction_time" not in st.session_state:
 	st.session_state.last_prediction_time = 0
 
-# Load the model once at startup
-model, class_names = load_keras_model()
+model_info, class_names = load_model()
 
 with st.sidebar:
 	st.image(logo, width=80)
@@ -344,17 +331,6 @@ with st.sidebar:
 			help="Automatically play audio when new signs are recognized"
 		)
 
-	st.markdown("---")
-
-	# Model status indicator
-	if model is not None and class_names is not None:
-		st.success("✅ Keras model loaded successfully")
-		st.info(f"📊 {len(class_names)} classes available")
-	else:
-		st.error("❌ Failed to load Keras model")
-		st.warning("Make sure 'keras_Model.h5' and 'labels.txt' exist")
-
-	st.markdown("---")
 	st.subheader("📊 Rate this App")
 	rating_input = st.feedback("stars")
 	if rating_input:
@@ -364,17 +340,17 @@ with st.sidebar:
 try:
 	with open("rating.txt", "r") as f:
 		ratings_list = [int(i) for i in f.read().split() if i.isnumeric()]
-	avg_rating = sum(ratings_list)/len(ratings_list) if ratings_list else 0
+	avg_rating = sum(ratings_list) / len(ratings_list) if ratings_list else 0
 except FileNotFoundError:
 	avg_rating = 0
 
 col_main, col_right = st.columns([3, 1])
 
 with col_right:
-	st.markdown("<div class='card'><h3>🚀 ASL Translator</h3><p>Point your camera at ASL signs and get instant translation with audio playback using Keras deep learning.</p></div>",
+	st.markdown("<div class='card'><h3>🚀 ASL Translator</h3><p>Point your camera at ASL signs and get instant "
+	            "translation with audio playback using Keras deep learning.</p></div>",
 	            unsafe_allow_html=True)
 
-	# Simple status display
 	if run:
 		status_text = "🟢 Active"
 		status_color = "#4CAF50"
@@ -382,10 +358,10 @@ with col_right:
 		status_text = "🔴 Stopped"
 		status_color = "#757575"
 
-	st.markdown(f"<div class='card'><h3>Status</h3><p style='color: {status_color}; font-weight: bold;'>{status_text}</p></div>",
-	            unsafe_allow_html=True)
+	st.markdown(
+		f"<div class='card'><h3>Status</h3><p style='color: {status_color}; font-weight: bold;'>{status_text}</p></div>",
+		unsafe_allow_html=True)
 
-	# Current recognition display (simplified)
 	if run and st.session_state.current_prediction:
 		confidence = st.session_state.prediction_confidence
 		if confidence >= confidence_threshold:
@@ -438,23 +414,20 @@ with col_main:
 				prediction_interval = 1.0
 
 				if (current_time - st.session_state.last_prediction_time) >= prediction_interval:
-					# Use the original frame (BGR) for the Keras model
-					predictions = predict_with_keras_model(frame, model, class_names, confidence_threshold)
+					predictions = predict_with_model(frame, model, class_names, confidence_threshold)
 
 					if predictions:
 						top_prediction = predictions[0]
 
 						if top_prediction["confidence"] >= confidence_threshold:
-							st.session_state.current_prediction = top_prediction["class"]
+							letter = ''.join([c for c in top_prediction["class"] if not c.isdigit()]).strip()
+							st.session_state.current_prediction = letter
 							st.session_state.prediction_confidence = top_prediction["confidence"]
 
-							# Add to accumulated text
 							if st.session_state.asl_text:
-								words = st.session_state.asl_text.split()
-								if not words or words[-1] != top_prediction["class"]:
-									st.session_state.asl_text += " " + top_prediction["class"]
+								st.session_state.asl_text += letter
 							else:
-								st.session_state.asl_text = top_prediction["class"]
+								st.session_state.asl_text = letter
 
 					st.session_state.last_prediction_time = current_time
 
@@ -495,9 +468,11 @@ with col_main:
 						if st.session_state.current_prediction:
 							confidence = st.session_state.prediction_confidence
 							if confidence >= confidence_threshold:
-								st.success(f"✅ Great! I can see the sign for: **{st.session_state.current_prediction}** (Confidence: {confidence:.0%})")
+								st.success(
+									f"✅ Great! I can see the sign for: **{st.session_state.current_prediction}** (Confidence: {confidence:.0%})")
 							else:
-								st.info(f"🤔 I think I see: **{st.session_state.current_prediction}** (Confidence: {confidence:.0%} - not confident enough)")
+								st.info(
+									f"🤔 I think I see: **{st.session_state.current_prediction}** (Confidence: {confidence:.0%} - not confident enough)")
 						else:
 							st.info("👀 Show me an ASL sign and I'll try to recognize it!")
 
@@ -510,7 +485,6 @@ with col_main:
 				st.session_state.camera.release()
 
 	else:
-		# Clean up camera when webcam is turned off
 		if "camera" in st.session_state:
 			st.session_state.camera.release()
 			del st.session_state.camera
