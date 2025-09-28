@@ -13,8 +13,11 @@ import base64
 import io
 import time
 import threading
-# from keras.models import load_model
+from keras.models import load_model  # TensorFlow is required for Keras to work
 import numpy as np
+
+# Disable scientific notation for clarity
+np.set_printoptions(suppress=True)
 
 logo = Image.open("asciendo.ico")
 st.set_page_config(page_title="Asciende", page_icon=logo, layout="wide")
@@ -226,54 +229,84 @@ h1, h2, h3 {
 </style>
 """, unsafe_allow_html=True)
 
-def predict_with_teachable_machine(image, model_url, confidence_threshold=0.5):
+@st.cache_resource
+def load_keras_model():
 	"""
-	Send image to Teachable Machine model and get predictions
+	Load the Keras model and class labels with caching for performance
 	"""
 	try:
+		# Load the model
+		model = load_model("keras_Model.h5", compile=False)
+
+		# Load the labels
+		class_names = open("labels.txt", "r").readlines()
+
+		return model, class_names
+	except Exception as e:
+		st.error(f"Error loading model: {str(e)}")
+		return None, None
+
+def predict_with_keras_model(image, model, class_names, confidence_threshold=0.5):
+	"""
+	Use the loaded Keras model to predict ASL signs
+	"""
+	try:
+		if model is None or class_names is None:
+			return []
+
+		# Resize the raw image into (224-height,224-width) pixels
 		image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
-		_, buffer = cv2.imencode('.jpg', image)
+
+		# Make the image a numpy array and reshape it to the models input shape.
 		image = np.asarray(image, dtype=np.float32).reshape(1, 224, 224, 3)
-		img_base64 = base64.b64encode(buffer).decode('utf-8')
-		# prediction = model.predict(image)
 
-		# index = np.argmax(prediction)
+		# Normalize the image array
+		image = (image / 127.5) - 1
 
-		# class_name = class_names[index]
+		# Predicts the model
+		prediction = model.predict(image, verbose=0)  # verbose=0 to suppress output
+		index = np.argmax(prediction)
+		class_name = class_names[index].strip()  # Remove whitespace/newline
+		confidence_score = prediction[0][index]
 
-		# confidence_score = prediction[0][index]
-		mock_predictions = [
-			{"class": "A", "confidence": 0.85},
-			{"class": "B", "confidence": 0.12},
-			{"class": "C", "confidence": 0.03},
-			{"class": "D", "confidence": 0.85},
-			{"class": "E", "confidence": 0.12},
-			{"class": "F", "confidence": 0.03},
-			{"class": "G", "confidence": 0.85},
-			{"class": "H", "confidence": 0.12},
-			{"class": "I", "confidence": 0.89}
-		]
+		# Remove the index prefix if it exists (e.g., "0 A" -> "A")
+		if len(class_name) > 2 and class_name[1] == ' ':
+			class_name = class_name[2:]
 
-		high_confidence_predictions = [p for p in mock_predictions if p["confidence"] >= confidence_threshold]
+		# Return predictions in the expected format
+		predictions = [{"class": class_name, "confidence": float(confidence_score)}]
 
-		return high_confidence_predictions if high_confidence_predictions else mock_predictions[:1]
+		# Add other top predictions for completeness
+		sorted_indices = np.argsort(prediction[0])[::-1]
+		all_predictions = []
+
+		for i in sorted_indices[:3]:  # Top 3 predictions
+			pred_class_name = class_names[i].strip()
+			if len(pred_class_name) > 2 and pred_class_name[1] == ' ':
+				pred_class_name = pred_class_name[2:]
+
+			all_predictions.append({
+				"class": pred_class_name,
+				"confidence": float(prediction[0][i])
+			})
+
+		# Filter by confidence threshold
+		high_confidence_predictions = [p for p in all_predictions if p["confidence"] >= confidence_threshold]
+
+		return high_confidence_predictions if high_confidence_predictions else all_predictions[:1]
 
 	except Exception as e:
-		st.error(f"Error calling Teachable Machine API: {str(e)}")
+		st.error(f"Error in model prediction: {str(e)}")
 		return []
 
 def preprocess_frame_for_model(frame):
 	"""
-	Preprocess OpenCV frame for Teachable Machine model input
+	Preprocess OpenCV frame for Keras model input
 	"""
-	resized = cv2.resize(frame, (224, 224))
+	# The Keras model preprocessing is now handled in predict_with_keras_model
+	return frame
 
-	rgb_frame = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-
-	normalized = rgb_frame.astype(np.float32) / 255.0
-
-	return normalized
-
+# Initialize session state
 if "asl_text" not in st.session_state:
 	st.session_state.asl_text = ""
 if "current_prediction" not in st.session_state:
@@ -282,6 +315,9 @@ if "prediction_confidence" not in st.session_state:
 	st.session_state.prediction_confidence = 0.0
 if "last_prediction_time" not in st.session_state:
 	st.session_state.last_prediction_time = 0
+
+# Load the model once at startup
+model, class_names = load_keras_model()
 
 with st.sidebar:
 	st.image(logo, width=80)
@@ -308,11 +344,15 @@ with st.sidebar:
 			help="Automatically play audio when new signs are recognized"
 		)
 
-		model_url = st.text_input(
-			"Model URL (Advanced)",
-			value="https://teachablemachine.withgoogle.com/models/XmMwOVIt2/",
-			help="Your Teachable Machine model URL"
-		)
+	st.markdown("---")
+
+	# Model status indicator
+	if model is not None and class_names is not None:
+		st.success("✅ Keras model loaded successfully")
+		st.info(f"📊 {len(class_names)} classes available")
+	else:
+		st.error("❌ Failed to load Keras model")
+		st.warning("Make sure 'keras_Model.h5' and 'labels.txt' exist")
 
 	st.markdown("---")
 	st.subheader("📊 Rate this App")
@@ -331,7 +371,7 @@ except FileNotFoundError:
 col_main, col_right = st.columns([3, 1])
 
 with col_right:
-	st.markdown("<div class='card'><h3>🚀 ASL Translator</h3><p>Point your camera at ASL signs and get instant translation with audio playback.</p></div>",
+	st.markdown("<div class='card'><h3>🚀 ASL Translator</h3><p>Point your camera at ASL signs and get instant translation with audio playback using Keras deep learning.</p></div>",
 	            unsafe_allow_html=True)
 
 	# Simple status display
@@ -362,113 +402,112 @@ with col_right:
 
 with col_main:
 	if run:
-		if "camera" not in st.session_state:
-			st.session_state.camera = cv2.VideoCapture(0)
-		if "frame_count" not in st.session_state:
-			st.session_state.frame_count = 0
-
-		if mode == "🎯 Translation":
-			# Audio at the top of hierarchy
-			audio_placeholder = st.empty()
-
-			# Text display
-			text_placeholder = st.empty()
-
-			# Webcam feed
-			FRAME_WINDOW = st.image([])
-
-		elif mode == "📚 Training":
-			st.markdown("### 📚 Practice Mode")
-
-			FRAME_WINDOW = st.image([])
-
-			training_feedback = st.empty()
-
-		frame_container = st.empty()
-
-		while run:
-			ret, frame = st.session_state.camera.read()
-			if not ret:
-				st.error("Failed to access camera")
-				break
-
-			frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-			FRAME_WINDOW.image(frame_rgb, channels="RGB")
-
-			current_time = time.time()
-			prediction_interval = 1.0
-
-			if (current_time - st.session_state.last_prediction_time) >= prediction_interval:
-				processed_frame = preprocess_frame_for_model(frame)
-
-				predictions = predict_with_teachable_machine(processed_frame, model_url, confidence_threshold)
-
-				if predictions:
-					top_prediction = predictions[0]
-
-					if top_prediction["confidence"] >= confidence_threshold:
-						st.session_state.current_prediction = top_prediction["class"]
-						st.session_state.prediction_confidence = top_prediction["confidence"]
-
-						if st.session_state.asl_text:
-							words = st.session_state.asl_text.split()
-							if not words or words[-1] != top_prediction["class"]:
-								st.session_state.asl_text += " " + top_prediction["class"]
-						else:
-							st.session_state.asl_text = top_prediction["class"]
-
-				st.session_state.last_prediction_time = current_time
+		if model is None or class_names is None:
+			st.error("❌ Cannot start recognition: Keras model not loaded properly")
+			st.info("Please ensure 'keras_Model.h5' and 'labels.txt' files are in the same directory as this script")
+		else:
+			if "camera" not in st.session_state:
+				st.session_state.camera = cv2.VideoCapture(0)
+			if "frame_count" not in st.session_state:
+				st.session_state.frame_count = 0
 
 			if mode == "🎯 Translation":
-				if st.session_state.asl_text and auto_audio:
-					try:
-						tts = gTTS(st.session_state.asl_text)
-						temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-						tts.save(temp_file.name)
-
-						with audio_placeholder.container():
-							st.markdown("### 🔊 Audio Translation")
-							st.audio(temp_file.name, format="audio/mp3")
-					except Exception as e:
-						with audio_placeholder.container():
-							st.error(f"Audio error: {str(e)}")
-
-				with text_placeholder.container():
-					if st.session_state.asl_text:
-						st.markdown("### 📝 Translated Text")
-						st.markdown(f"""
-                        <div style='background: linear-gradient(135deg, #2a2a2a, #3d3d3d); 
-                                    padding: 25px; border-radius: 15px; 
-                                    border: 2px solid rgba(255, 215, 0, 0.3);
-                                    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-                                    margin: 20px 0;'>
-                            <h2 style='color: #fff; margin: 0; font-size: 28px; text-align: center;'>
-                                {st.session_state.asl_text}
-                            </h2>
-                        </div>
-                        """, unsafe_allow_html=True)
-					else:
-						st.markdown("### 📝 Translated Text")
-						st.info("👋 Start signing in front of the camera to see translations appear here!")
+				FRAME_WINDOW = st.image([])
+				audio_placeholder = st.empty()
+				text_placeholder = st.empty()
 
 			elif mode == "📚 Training":
-				with training_feedback.container():
-					if st.session_state.current_prediction:
-						confidence = st.session_state.prediction_confidence
-						if confidence >= confidence_threshold:
-							st.success(f"✅ Great! I can see the sign for: **{st.session_state.current_prediction}**")
+				st.markdown("### 📚 Practice Mode")
+
+				FRAME_WINDOW = st.image([])
+
+				training_feedback = st.empty()
+
+			frame_container = st.empty()
+
+			while run:
+				ret, frame = st.session_state.camera.read()
+				if not ret:
+					st.error("Failed to access camera")
+					break
+
+				frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+				FRAME_WINDOW.image(frame_rgb, channels="RGB")
+
+				current_time = time.time()
+				prediction_interval = 1.0
+
+				if (current_time - st.session_state.last_prediction_time) >= prediction_interval:
+					# Use the original frame (BGR) for the Keras model
+					predictions = predict_with_keras_model(frame, model, class_names, confidence_threshold)
+
+					if predictions:
+						top_prediction = predictions[0]
+
+						if top_prediction["confidence"] >= confidence_threshold:
+							st.session_state.current_prediction = top_prediction["class"]
+							st.session_state.prediction_confidence = top_prediction["confidence"]
+
+							# Add to accumulated text
+							if st.session_state.asl_text:
+								words = st.session_state.asl_text.split()
+								if not words or words[-1] != top_prediction["class"]:
+									st.session_state.asl_text += " " + top_prediction["class"]
+							else:
+								st.session_state.asl_text = top_prediction["class"]
+
+					st.session_state.last_prediction_time = current_time
+
+				if mode == "🎯 Translation":
+					if st.session_state.asl_text and auto_audio:
+						try:
+							tts = gTTS(st.session_state.asl_text)
+							temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+							tts.save(temp_file.name)
+
+							with audio_placeholder.container():
+								st.markdown("### 🔊 Audio Translation")
+								st.audio(temp_file.name, format="audio/mp3")
+						except Exception as e:
+							with audio_placeholder.container():
+								st.error(f"Audio error: {str(e)}")
+
+					with text_placeholder.container():
+						if st.session_state.asl_text:
+							st.markdown("### 📝 Translated Text")
+							st.markdown(f"""
+                            <div style='background: linear-gradient(135deg, #2a2a2a, #3d3d3d); 
+                                        padding: 25px; border-radius: 15px; 
+                                        border: 2px solid rgba(255, 215, 0, 0.3);
+                                        box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+                                        margin: 20px 0;'>
+                                <h2 style='color: #fff; margin: 0; font-size: 28px; text-align: center;'>
+                                    {st.session_state.asl_text}
+                                </h2>
+                            </div>
+                            """, unsafe_allow_html=True)
 						else:
-							st.info(f"🤔 I think I see: **{st.session_state.current_prediction}** (not confident enough)")
-					else:
-						st.info("👀 Show me an ASL sign and I'll try to recognize it!")
+							st.markdown("### 📝 Translated Text")
+							st.info("👋 Start signing in front of the camera to see translations appear here!")
 
-			st.session_state.frame_count += 1
+				elif mode == "📚 Training":
+					with training_feedback.container():
+						if st.session_state.current_prediction:
+							confidence = st.session_state.prediction_confidence
+							if confidence >= confidence_threshold:
+								st.success(f"✅ Great! I can see the sign for: **{st.session_state.current_prediction}** (Confidence: {confidence:.0%})")
+							else:
+								st.info(f"🤔 I think I see: **{st.session_state.current_prediction}** (Confidence: {confidence:.0%} - not confident enough)")
+						else:
+							st.info("👀 Show me an ASL sign and I'll try to recognize it!")
 
-			if not run:
-				break
+				st.session_state.frame_count += 1
 
-		if "camera" in st.session_state:
-			st.session_state.camera.release()
+				if not run:
+					break
+
+			if "camera" in st.session_state:
+				st.session_state.camera.release()
 
 	else:
 		# Clean up camera when webcam is turned off
@@ -480,16 +519,17 @@ with col_main:
         <div class='webcam-off-container'>
             <div class='webcam-off-card'>
                 <h3 style='color: #f5f5f5; margin-bottom: 12px;'>📷 Webcam is Off</h3>
-                <p style='color: #b5b5b5; line-height: 1.5;'>Toggle 'Run Webcam' in the sidebar to start OpenCV capture with Teachable Machine API integration.</p>
+                <p style='color: #b5b5b5; line-height: 1.5;'>Toggle 'Start Recognition' in the sidebar to begin real-time ASL recognition using your trained Keras model.</p>
                 <br>
                 <p style='color: #ff8c42; font-weight: bold;'>✨ Features:</p>
                 <p style='color: #b5b5b5; font-size: 14px;'>
                 • OpenCV video capture<br>
-                • Teachable Machine API integration<br>
-                • Configurable prediction intervals<br>
-                • Real-time ASL recognition<br>
+                • Keras deep learning model<br>
+                • Real-time ASL sign recognition<br>
+                • Confidence-based predictions<br>
                 • Audio feedback generation<br>
-                • Training mode with feedback
+                • Training mode with detailed feedback<br>
+                • Customizable sensitivity settings
                 </p>
             </div>
         </div>
